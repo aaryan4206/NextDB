@@ -1,0 +1,40 @@
+# 🔧 CMake build directories
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+Makefile
+cmake_install.cmake
+compile_commands.json
+
+# 🧱 CLion / JetBrains IDE files
+.idea/
+*.iml
+
+# ⚙️ Build artifacts / binaries
+*.o
+*.out
+*.exe
+*.a
+*.so
+*.dylib
+
+# 🚫 Compiled binary
+NextDB
+
+# 📂 Runtime database folder (keep folder, ignore contents)
+dbs/*
+!dbs/.gitkeep
+
+# 🧾 Logs / temp files
+*.log
+*.tmp
+temp.dat
+
+# 🍎 macOS
+.DS_Store
+
+# 🐧 Linux
+*~
+
+# 🪟 Windows
+Thumbs.db
