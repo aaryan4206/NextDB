@@ -5,6 +5,7 @@
 #include <dirent.h>
 #include <unistd.h>
 
+#define VERSION "v1.0.1"
 #define MAX_CMD_LEN 100
 #define PROMPT "\033[1;32m"
 #define ERROR "\033[0;31m"
@@ -896,6 +897,7 @@ int main() {
 
     login();
     printf("WELCOME TO NextDB CLI.\n");
+    printf("NextDB CLI %s\n", VERSION);
     printf("Type 'help' for help.\n\n");
 
     while (1) {
