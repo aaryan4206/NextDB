@@ -10,7 +10,7 @@
 #define ERROR "\033[0;31m"
 #define RESET "\033[0m"
 #define MAX_PATH 256
-#define DB_PATH "../dbs"
+#define DB_PATH "dbs"
 
 char currentDB[100] = "";
 
@@ -148,7 +148,7 @@ void createdb() {
     printf("\tEnter the full name of the database: ");
     if (fgets(new_db_name, sizeof(new_db_name), stdin)) {
         new_db_name[strcspn(new_db_name, "\n")] = 0;
-        snprintf(full_path, sizeof(full_path), "../dbs/%s", new_db_name);
+        snprintf(full_path, sizeof(full_path), "%s/%s", DB_PATH, new_db_name);
     }
     if (mkdir(full_path, 0777) == 0) {
         printf(PROMPT "\tDatabase created successfully\n\n" RESET);
@@ -891,6 +891,7 @@ void mydb_ops(char input[MAX_CMD_LEN]) {
 }
 
 int main() {
+    mkdir(DB_PATH, 0777);
     char input[MAX_CMD_LEN];
 
     login();
