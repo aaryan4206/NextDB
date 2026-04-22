@@ -5,14 +5,35 @@ NextDB is a lightweight command-line based database management system written in
 ---
 
 ## 🚀 Features
+- 🗄️ Database Operations
+  - Create, delete, and list databases
+  - Switch between databases
+- 📊 Table Management
+  - Create and delete tables
+  - Alter table structure (add/drop columns)
+  - View available tables
+- 🧾 Record Operations
+  - Insert records
+  - Update records (conditional)
+  - Delete records (conditional)
+- 🔍 Query Features
+  - Filter records (WHERE-like functionality)
+  - Sort records (ASC/DESC)
+  - SQL-style formatted table output
+- ⚙️ CLI Enhancements
+  - Command validation system
+  - Help menu (help)
+  - Clear screen (clear)
+  - Consistent and user-friendly prompts
 
-- 📂 Create and manage multiple databases  
-- 📄 Create, delete, and alter tables  
-- ➕ Insert, update, and delete records  
-- 🔍 View tables with filtering and sorting  
-- 🧠 Simple schema-based data validation (int, float, string)  
-- 💻 Fully CLI-based interface  
-- ⚡ Lightweight and fast (no external dependencies)
+---
+
+## 🧠 How It Works
+- Each database is a directory
+- Each table is a file
+- Schema is stored in the first line:
+  - column|type,column|type,...
+- Records are stored as CSV-style rows
 
 ---
 
@@ -99,8 +120,6 @@ Password: root
 
 ## 🧾 Example Table Schema Format
 
-Tables are stored as files. The first line defines schema:
-
 ```
 id:int,name:string,marks:float
 ```
@@ -123,6 +142,11 @@ NextDB> createtb
 NextDB> insert
 NextDB> view
 ```
+
+---
+
+## 📦 Version
+Current version: v1.0.2
 
 ---
 

@@ -1,801 +1,346 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <dirent.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
-#define VERSION "v1.0.1"
-#define MAX_CMD_LEN 100
-#define PROMPT "\033[1;32m"
-#define ERROR "\033[0;31m"
-#define RESET "\033[0m"
+#define VERSION "v1.0.2"
+#define MAX_INPUT 128
 #define MAX_PATH 256
-#define DB_PATH "dbs"
+#define DB_ROOT "dbs"
 
-char currentDB[100] = "";
+#define COLOR_OK "\033[1;32m"
+#define COLOR_ERR "\033[0;31m"
+#define COLOR_RESET "\033[0m"
 
-void login() {
-    char username[50], password[50];
+char activeDB[64] = "";
 
-    printf("Enter username: ");
-    fgets(username, 50, stdin);
-    printf("Enter password: ");
-    fgets(password, 50, stdin);
+/* ================= UTILITIES ================= */
 
-    if (strcmp(username, "root\n") == 0 && strcmp(password, "root\n") == 0) {
-        printf("User logged in.\n");
-        system("clear");
-    }
-    else {
-        printf("Invalid username or password!\n");
-        login();
-    }
-}
-
-void nextdb_commands() {
-    printf("NextDB COMMANDS:-\n\n");
-    printf("help       : Display this help.\n");
-    printf("clear      : Clear the current input statement.\n");
-    printf("exit       : Exit MyDB.\n");
-    printf("showdb     : Show list of existing databases.\n");
-    printf("usedb      : Open an existing database.\n");
-    printf("createdb   : Create a new database.\n");
-    printf("createtb   : Create a new table inside database.\n");
-    printf("showtb     : Show list of existing tables.\n");
-    printf("insert     : Insert a new record.\n");
-    printf("delete     : Delete a record.\n");
-    printf("view       : View a table.\n");
-    printf("altertb    : Alter table structure.\n");
-    printf("updatetb   : Update table contents.\n");
-    printf("deletetb   : Delete table.\n");
-    printf("deletedb   : Delete database.\n");
-    printf("\n\n");
-}
-
-int deleteDirectory(const char *path) {
-    struct dirent *entry;
-    DIR *dp = opendir(path);
-
-    if (!dp) return -1;
-
-    char fullPath[256];
-
-    while ((entry = readdir(dp)) != NULL) {
-        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
-            continue;
-
-        snprintf(fullPath, sizeof(fullPath), "%s/%s", path, entry->d_name);
-
-        struct stat statbuf;
-        stat(fullPath, &statbuf);
-
-        if (S_ISDIR(statbuf.st_mode)) {
-            deleteDirectory(fullPath);
-        } else {
-            remove(fullPath);
-        }
-    }
-
-    closedir(dp);
-
-    return rmdir(path);
-}
-
-void printBorder(int colCount) {
-    for (int i = 0; i < colCount; i++) {
+void print_separator(int cols) {
+    for (int i = 0; i < cols; i++) {
         printf("+----------------");
     }
     printf("+\n");
 }
 
-void showdb() {
+void trim_newline(char *str) {
+    str[strcspn(str, "\n")] = 0;
+}
+
+void read_input(const char *prompt, char *buffer, int size) {
+    printf("%s", prompt);
+    fgets(buffer, size, stdin);
+    trim_newline(buffer);
+}
+
+void build_path(char *dest, const char *a, const char *b, const char *c) {
+    snprintf(dest, MAX_PATH, "%s/%s/%s", a, b, c ? c : "");
+}
+
+int requires_database(const char *cmd) {
+    const char *db_required[] = {
+        "createtb", "showtb", "insert",
+        "view", "deletetb", "altertb",
+        "updatetb", "delete"
+    };
+
+    int size = sizeof(db_required) / sizeof(db_required[0]);
+
+    for (int i = 0; i < size; i++) {
+        if (strcmp(cmd, db_required[i]) == 0)
+            return 1;
+    }
+    return 0;
+}
+
+/* ================= AUTH ================= */
+
+void login() {
+    char user[50], pass[50];
+
+    while (1) {
+        read_input("Username: ", user, sizeof(user));
+        read_input("Password: ", pass, sizeof(pass));
+
+        if (strcmp(user, "root") == 0 && strcmp(pass, "root") == 0) {
+            printf(COLOR_OK "Login successful\n" COLOR_RESET);
+            system("clear");
+            return;
+        }
+        printf(COLOR_ERR "Invalid credentials\n" COLOR_RESET);
+    }
+}
+
+/* ================= SYSTEM ================= */
+
+void show_help() {
+    printf("\nAvailable Commands:\n");
+    printf("--------------------------------------------------\n");
+    printf("Database Operations:\n");
+    printf("  createdb   - Create a new database\n");
+    printf("  usedb      - Select a database\n");
+    printf("  showdb     - List all databases\n");
+    printf("  deletedb   - Delete a database\n\n");
+
+    printf("Table Operations:\n");
+    printf("  createtb   - Create a new table\n");
+    printf("  showtb     - List tables in current database\n");
+    printf("  deletetb   - Delete a table\n");
+    printf("  altertb    - Modify table structure\n\n");
+
+    printf("Record Operations:\n");
+    printf("  insert     - Insert a record\n");
+    printf("  updatetb   - Update records\n");
+    printf("  delete     - Delete records\n");
+    printf("  view       - View table data\n\n");
+
+    printf("System:\n");
+    printf("  help       - Show this menu\n");
+    printf("  clear      - Clear the terminal screen\n");
+    printf("  exit       - Exit program\n");
+    printf("--------------------------------------------------\n\n");
+}
+
+void clear_screen() {
+    #ifdef _WIN32
+        system("cls");
+    #else
+        system("clear");
+    #endif
+}
+
+/* ================= DATABASE ================= */
+
+void list_databases() {
+    DIR *dir = opendir(DB_ROOT);
     struct dirent *entry;
-    DIR *dp = opendir(DB_PATH);
 
-    if (dp == NULL) {
-        perror("opendir");
-        return;
+    if (!dir) return;
+
+    printf("Databases:\n");
+    while ((entry = readdir(dir))) {
+        if (entry->d_name[0] != '.')
+            printf(" - %s\n", entry->d_name);
     }
-
-    printf("\tAvailable Databases:-\n");
-
-    while ((entry = readdir(dp)) != NULL) {
-        if (entry->d_name[0] != '.') {
-            printf("\t-> %s\n", entry->d_name);
-        }
-    }
-
-    closedir(dp);
+    closedir(dir);
+    printf("\n");
 }
 
-void usedb() {
+void create_database() {
+    char name[64], path[MAX_PATH];
+
+    read_input("Database name: ", name, sizeof(name));
+    snprintf(path, sizeof(path), "%s/%s", DB_ROOT, name);
+
+    if (mkdir(path, 0777) == 0)
+        printf(COLOR_OK "Database created\n" COLOR_RESET);
+    else
+        printf(COLOR_ERR "Creation failed\n" COLOR_RESET);
+    printf("\n");
+}
+
+void use_database() {
+    char name[64], path[MAX_PATH];
+
+    read_input("Use database: ", name, sizeof(name));
+    snprintf(path, sizeof(path), "%s/%s", DB_ROOT, name);
+
+    if (access(path, F_OK) == 0) {
+        strcpy(activeDB, name);
+        printf(COLOR_OK "Using DB: %s\n" COLOR_RESET, name);
+    } else {
+        printf(COLOR_ERR "Database not found\n" COLOR_RESET);
+    }
+    printf("\n");
+}
+
+void delete_database() {
+    char name[64], path[MAX_PATH];
+    read_input("Delete DB: ", name, sizeof(name));
+
+    snprintf(path, sizeof(path), "%s/%s", DB_ROOT, name);
+
+    DIR *dir = opendir(path);
     struct dirent *entry;
-    DIR *dp;
+    char filePath[MAX_PATH];
 
-    char dbname[100];
-    printf("\tEnter database name to use: ");
-    fgets(dbname, sizeof(dbname), stdin);
-    dbname[strcspn(dbname, "\n")] = 0;
-
-    dp = opendir(DB_PATH);
-    if (dp == NULL) {
-        perror("opendir");
+    if (!dir) {
+        printf(COLOR_ERR "DB not found\n" COLOR_RESET);
         return;
     }
 
-    int found = 0;
+    while ((entry = readdir(dir))) {
+        if (entry->d_name[0] == '.') continue;
 
-    while ((entry = readdir(dp)) != NULL) {
-        if (entry->d_name[0] != '.' && strcmp(entry->d_name, dbname) == 0) {
-            found = 1;
-            break;
-        }
+        snprintf(filePath, sizeof(filePath), "%s/%s", path, entry->d_name);
+        remove(filePath);
     }
 
-    closedir(dp);
+    closedir(dir);
+    rmdir(path);
 
-    if (found) {
-        strcpy(currentDB, dbname);
-        printf(PROMPT "\tConnected to database: %s\n\n" RESET, currentDB);
-    } else {
-        printf(ERROR "\tDatabase '%s' does not exist.\n" RESET, dbname);
-    }
+    printf(COLOR_OK "Database deleted\n" COLOR_RESET);
+    printf("\n");
 }
 
-void createdb() {
-    char new_db_name[MAX_PATH];
-    char full_path[MAX_PATH];
-    printf("\tEnter the full name of the database: ");
-    if (fgets(new_db_name, sizeof(new_db_name), stdin)) {
-        new_db_name[strcspn(new_db_name, "\n")] = 0;
-        snprintf(full_path, sizeof(full_path), "%s/%s", DB_PATH, new_db_name);
-    }
-    if (mkdir(full_path, 0777) == 0) {
-        printf(PROMPT "\tDatabase created successfully\n\n" RESET);
-    } else {
-        printf(ERROR "\tUnable to create database\n\n" RESET);
-    }
-}
+/* ================= TABLE ================= */
 
-void deletedb() {
-    char dbname[100], path[200];
-
-    printf("\tEnter database name to delete: ");
-    fgets(dbname, sizeof(dbname), stdin);
-    dbname[strcspn(dbname, "\n")] = 0;
-
-    snprintf(path, sizeof(path), "%s/%s", DB_PATH, dbname);
-
-    if (deleteDirectory(path) == 0) {
-        printf(PROMPT "\tDatabase deleted successfully\n" RESET);
-
-        if (strcmp(currentDB, dbname) == 0) {
-            currentDB[0] = '\0';
-        }
-    } else {
-        printf(ERROR "\tFailed to delete database\n" RESET);
-    }
-}
-
-void createtb() {
-    if (currentDB[0] == '\0') {
-        printf(ERROR "\tNo database selected!\n" RESET);
+void create_table() {
+    if (!activeDB[0]) {
+        printf(COLOR_ERR "No DB selected\n" COLOR_RESET);
         return;
     }
 
-    char tbname[100];
-    printf("\tEnter table name: ");
-    fgets(tbname, sizeof(tbname), stdin);
-    tbname[strcspn(tbname, "\n")] = 0;
+    char name[64], path[MAX_PATH];
+    read_input("Table name: ", name, sizeof(name));
 
-    char path[256];
-    snprintf(path, sizeof(path), "%s/%s/%s", DB_PATH, currentDB, tbname);
+    build_path(path, DB_ROOT, activeDB, name);
 
     FILE *fp = fopen(path, "w");
-    if (fp == NULL) {
-        printf(ERROR "\tError creating table\n" RESET);
-        return;
-    }
+    if (!fp) return;
 
+    int cols;
     char input[10];
-    int n;
+    read_input("Columns count: ", input, sizeof(input));
+    cols = atoi(input);
 
-    printf("\tEnter number of columns: ");
-    fgets(input, sizeof(input), stdin);
-    n = atoi(input);
+    for (int i = 0; i < cols; i++) {
+        char col[50], type[20];
 
-    if (n <= 0) {
-        printf(ERROR "\tInvalid number of columns\n" RESET);
-        fclose(fp);
-        return;
-    }
+        read_input("Column name: ", col, sizeof(col));
+        read_input("Type (int/str/float): ", type, sizeof(type));
 
-    char col[50], type[20];
-
-    printf("\tEnter column names and types:\n");
-
-    for (int i = 0; i < n; i++) {
-        printf("\tColumn %d name: ", i + 1);
-        fgets(col, sizeof(col), stdin);
-        col[strcspn(col, "\n")] = 0;
-
-        printf("\tColumn %d type (int/string/float): ", i + 1);
-        fgets(type, sizeof(type), stdin);
-        type[strcspn(type, "\n")] = 0;
-
-        fprintf(fp, "%s:%s", col, type);
-
-        if (i != n - 1)
-            fprintf(fp, ",");
+        fprintf(fp, "%s|%s", col, type);
+        if (i != cols - 1) fprintf(fp, ",");
     }
 
     fprintf(fp, "\n");
     fclose(fp);
 
-    printf(PROMPT "\tTable created with schema successfully\n\n" RESET);
+    printf(COLOR_OK "Table created\n" COLOR_RESET);
+    printf("\n");
 }
 
-void showtb() {
-    if (currentDB[0] == '\0') {
-        printf(ERROR "\tNo database selected!\n" RESET);
-        return;
-    }
+void list_tables() {
+    if (!activeDB[0]) return;
 
+    char path[MAX_PATH];
+    snprintf(path, sizeof(path), "%s/%s", DB_ROOT, activeDB);
+
+    DIR *dir = opendir(path);
     struct dirent *entry;
-    char path[256];
-    snprintf(path, sizeof(path), "%s/%s", DB_PATH, currentDB);
-
-    DIR *dp = opendir(path);
-
-    if (dp == NULL) {
-        perror("opendir");
-        return;
+    printf("Tables in %s:\n",activeDB);
+    while ((entry = readdir(dir))) {
+        if (entry->d_name[0] != '.')
+            printf(" - %s\n", entry->d_name);
     }
 
-    printf("\tTables in %s:\n", currentDB);
-
-    while ((entry = readdir(dp)) != NULL) {
-        if (entry->d_name[0] != '.') {
-            printf("\t-> %s\n", entry->d_name);
-        }
-    }
-
-    closedir(dp);
+    closedir(dir);
+    printf("\n");
 }
 
-void insertRecord() {
-    if (currentDB[0] == '\0') {
-        printf(ERROR "\tNo database selected!\n" RESET);
-        return;
-    }
+/* ================= RECORD OPS ================= */
 
-    char tbname[100];
-    printf("\tEnter table name: ");
-    fgets(tbname, sizeof(tbname), stdin);
-    tbname[strcspn(tbname, "\n")] = 0;
+void insert_record() {
+    if (!activeDB[0]) return;
 
-    char path[256];
-    snprintf(path, sizeof(path), "%s/%s/%s", DB_PATH, currentDB, tbname);
+    char table[64], path[MAX_PATH];
+    read_input("Table: ", table, sizeof(table));
+    build_path(path, DB_ROOT, activeDB, table);
 
     FILE *fp = fopen(path, "r+");
-    if (fp == NULL) {
-        printf(ERROR "\tTable not found\n" RESET);
-        return;
-    }
+    if (!fp) return;
 
     char schema[256];
     fgets(schema, sizeof(schema), fp);
 
-    char *col = strtok(schema, ",");
-    char values[256] = "";
-    char input[100];
+    char *token = strtok(schema, ",");
+    char row[256] = "";
 
-    while (col != NULL) {
-        char name[50], type[20];
+    while (token) {
+        char col[50];
+        sscanf(token, "%[^|]", col);
 
-        sscanf(col, "%[^:]:%s", name, type);
+        char value[50];
+        printf("%s: ", col);
+        fgets(value, sizeof(value), stdin);
+        trim_newline(value);
 
-        printf("\tEnter value for %s (%s): ", name, type);
-        fgets(input, sizeof(input), stdin);
-        input[strcspn(input, "\n")] = 0;
+        strcat(row, value);
+        token = strtok(NULL, ",");
 
-        if (strcmp(type, "int") == 0) {
-            for (int i = 0; input[i]; i++) {
-                if (input[i] < '0' || input[i] > '9') {
-                    printf(ERROR "\tInvalid integer input\n" RESET);
-                    fclose(fp);
-                    return;
-                }
-            }
-        }
-        else if (strcmp(type, "float") == 0) {
-            int dot = 0;
-            for (int i = 0; input[i]; i++) {
-                if (input[i] == '.') dot++;
-                else if (input[i] < '0' || input[i] > '9') {
-                    printf(ERROR "\tInvalid float input\n" RESET);
-                    fclose(fp);
-                    return;
-                }
-            }
-            if (dot > 1) {
-                printf(ERROR "\tInvalid float format\n" RESET);
-                fclose(fp);
-                return;
-            }
-        }
-
-        strcat(values, input);
-
-        col = strtok(NULL, ",");
-        if (col != NULL)
-            strcat(values, ",");
+        if (token) strcat(row, ",");
     }
 
-    fprintf(fp, "%s\n", values);
+    fprintf(fp, "%s\n", row);
     fclose(fp);
 
-    printf(PROMPT "\tRecord inserted successfully\n\n" RESET);
+    printf(COLOR_OK "Inserted\n" COLOR_RESET);
+    printf("\n");
 }
 
-void deletetb() {
-    if (currentDB[0] == '\0') {
-        printf(ERROR "\tNo database selected!\n" RESET);
-        return;
-    }
+/* ================= VIEW ================= */
 
-    char tbname[100];
+void view_table() {
+    if (!activeDB[0]) return;
 
-    printf("\tEnter table name to delete: ");
-    fgets(tbname, sizeof(tbname), stdin);
-    tbname[strcspn(tbname, "\n")] = 0;
-
-    char path[256];
-    snprintf(path, sizeof(path), "%s/%s/%s", DB_PATH, currentDB, tbname);
-
-    if (remove(path) == 0) {
-        printf(PROMPT "\tTable deleted successfully\n\n" RESET);
-    } else {
-        printf(ERROR "\tFailed to delete table\n\n" RESET);
-    }
-}
-
-void alterTable() {
-    if (currentDB[0] == '\0') {
-        printf(ERROR "\tNo database selected!\n" RESET);
-        return;
-    }
-
-    char tbname[100], action[20], column[50], type[20];
-
-    printf("\tEnter table name: ");
-    fgets(tbname, sizeof(tbname), stdin);
-    tbname[strcspn(tbname, "\n")] = 0;
-
-    printf("\tEnter action (add/drop): ");
-    fgets(action, sizeof(action), stdin);
-    action[strcspn(action, "\n")] = 0;
-
-    char path[256];
-    snprintf(path, sizeof(path), "%s/%s/%s", DB_PATH, currentDB, tbname);
+    char table[64], path[MAX_PATH];
+    read_input("Table: ", table, sizeof(table));
+    build_path(path, DB_ROOT, activeDB, table);
 
     FILE *fp = fopen(path, "r");
     if (!fp) {
-        printf(ERROR "\tTable not found\n" RESET);
-        return;
-    }
-
-    FILE *temp = fopen("temp.dat", "w");
-
-    char line[512];
-
-    fgets(line, sizeof(line), fp);
-    line[strcspn(line, "\n")] = 0;
-
-    if (strcmp(action, "add") == 0) {
-        printf("\tEnter new column name: ");
-        fgets(column, sizeof(column), stdin);
-        column[strcspn(column, "\n")] = 0;
-
-        printf("\tEnter type (int/string/float): ");
-        fgets(type, sizeof(type), stdin);
-        type[strcspn(type, "\n")] = 0;
-
-        fprintf(temp, "%s,%s:%s\n", line, column, type);
-
-        while (fgets(line, sizeof(line), fp)) {
-            line[strcspn(line, "\n")] = 0;
-            fprintf(temp, "%s,NULL\n", line);
-        }
-    }
-
-    else if (strcmp(action, "drop") == 0) {
-        printf("\tEnter column name to drop: ");
-        fgets(column, sizeof(column), stdin);
-        column[strcspn(column, "\n")] = 0;
-
-        char schemaCopy[512];
-        strcpy(schemaCopy, line);
-
-        char *cols[50];
-        int colCount = 0, dropIndex = -1;
-
-        char *token = strtok(schemaCopy, ",");
-        while (token != NULL) {
-            cols[colCount] = token;
-
-            char name[50], t[20];
-            sscanf(token, "%[^:]:%s", name, t);
-
-            if (strcmp(name, column) == 0)
-                dropIndex = colCount;
-
-            colCount++;
-            token = strtok(NULL, ",");
-        }
-
-        if (dropIndex == -1) {
-            printf(ERROR "\tColumn not found\n" RESET);
-            fclose(fp); fclose(temp);
-            return;
-        }
-
-        int first = 1;
-
-        for (int i = 0; i < colCount; i++) {
-            if (i != dropIndex) {
-                if (!first) fprintf(temp, ",");
-                fprintf(temp, "%s", cols[i]);
-                first = 0;
-            }
-        }
-        fprintf(temp, "\n");
-
-        while (fgets(line, sizeof(line), fp)) {
-            char copy[512];
-            strcpy(copy, line);
-
-            char *fields[50];
-            int i = 0;
-
-            char *f = strtok(copy, ",");
-            while (f != NULL) {
-                fields[i++] = f;
-                f = strtok(NULL, ",");
-            }
-
-            for (int j = 0; j < i; j++) {
-                if (j != dropIndex) {
-                    fprintf(temp, "%s", fields[j]);
-                    if (j != i - 1) fprintf(temp, ",");
-                }
-            }
-            fprintf(temp, "\n");
-        }
-    }
-
-    fclose(fp);
-    fclose(temp);
-
-    remove(path);
-    rename("temp.dat", path);
-
-    printf(PROMPT "\tTable altered successfully\n\n" RESET);
-}
-
-void updateRecord() {
-    if (currentDB[0] == '\0') {
-        printf(ERROR "\tNo database selected!\n" RESET);
-        return;
-    }
-
-    char tbname[100], targetCol[50], newValue[50];
-    char condCol[50], condVal[50];
-
-    printf("\tEnter table name: ");
-    fgets(tbname, sizeof(tbname), stdin);
-    tbname[strcspn(tbname, "\n")] = 0;
-
-    printf("\tSET column: ");
-    fgets(targetCol, sizeof(targetCol), stdin);
-    targetCol[strcspn(targetCol, "\n")] = 0;
-
-    printf("\tNew value: ");
-    fgets(newValue, sizeof(newValue), stdin);
-    newValue[strcspn(newValue, "\n")] = 0;
-
-    printf("\tWHERE column: ");
-    fgets(condCol, sizeof(condCol), stdin);
-    condCol[strcspn(condCol, "\n")] = 0;
-
-    printf("\tCondition value: ");
-    fgets(condVal, sizeof(condVal), stdin);
-    condVal[strcspn(condVal, "\n")] = 0;
-
-    char path[256];
-    snprintf(path, sizeof(path), "%s/%s/%s", DB_PATH, currentDB, tbname);
-
-    FILE *fp = fopen(path, "r");
-    FILE *temp = fopen("temp.dat", "w");
-
-    if (!fp || !temp) {
-        printf(ERROR "\tFile error\n" RESET);
+        printf(COLOR_ERR "Table not found\n" COLOR_RESET);
         return;
     }
 
     char line[512];
-
-    fgets(line, sizeof(line), fp);
-    fprintf(temp, "%s", line);
-
-    int targetIndex = -1, condIndex = -1, i = 0;
-
-    char schemaCopy[512];
-    strcpy(schemaCopy, line);
-
-    char *token = strtok(schemaCopy, ",");
-
-    while (token != NULL) {
-        char name[50], t[20];
-        sscanf(token, "%[^:]:%s", name, t);
-
-        if (strcmp(name, targetCol) == 0)
-            targetIndex = i;
-
-        if (strcmp(name, condCol) == 0)
-            condIndex = i;
-
-        i++;
-        token = strtok(NULL, ",");
-    }
-
-    if (targetIndex == -1 || condIndex == -1) {
-        printf(ERROR "\tColumn not found\n" RESET);
-        fclose(fp); fclose(temp);
-        return;
-    }
-
-    while (fgets(line, sizeof(line), fp)) {
-        char copy[512];
-        strcpy(copy, line);
-
-        char *fields[50];
-        int j = 0;
-
-        char *f = strtok(copy, ",");
-        while (f != NULL) {
-            fields[j++] = f;
-            f = strtok(NULL, ",");
-        }
-
-        fields[j - 1][strcspn(fields[j - 1], "\n")] = 0;
-
-        if (strcmp(fields[condIndex], condVal) == 0) {
-            strcpy(fields[targetIndex], newValue);
-        }
-
-        for (int k = 0; k < j; k++) {
-            fprintf(temp, "%s", fields[k]);
-            if (k != j - 1) fprintf(temp, ",");
-        }
-        fprintf(temp, "\n");
-    }
-
-    fclose(fp);
-    fclose(temp);
-
-    remove(path);
-    rename("temp.dat", path);
-
-    printf(PROMPT "\tRecord(s) updated successfully\n\n" RESET);
-}
-
-void deleteRecord() {
-    if (currentDB[0] == '\0') {
-        printf(ERROR "\tNo database selected!\n" RESET);
-        return;
-    }
-
-    char tbname[100], column[50], value[50];
-
-    printf("\tEnter table name: ");
-    fgets(tbname, sizeof(tbname), stdin);
-    tbname[strcspn(tbname, "\n")] = 0;
-
-    printf("\tEnter condition column: ");
-    fgets(column, sizeof(column), stdin);
-    column[strcspn(column, "\n")] = 0;
-
-    printf("\tEnter value to match: ");
-    fgets(value, sizeof(value), stdin);
-    value[strcspn(value, "\n")] = 0;
-
-    char path[256];
-    snprintf(path, sizeof(path), "%s/%s/%s", DB_PATH, currentDB, tbname);
-
-    FILE *fp = fopen(path, "r");
-    if (fp == NULL) {
-        printf(ERROR "\tTable not found\n" RESET);
-        return;
-    }
-
-    FILE *temp = fopen("temp.dat", "w");
-    if (temp == NULL) {
-        printf(ERROR "\tError creating temp file\n" RESET);
-        fclose(fp);
-        return;
-    }
-
-    char line[512];
-
-    fgets(line, sizeof(line), fp);
-    fprintf(temp, "%s", line);
-
-    int colIndex = -1, index = 0;
-    char schemaCopy[512];
-    strcpy(schemaCopy, line);
-
-    char *token = strtok(schemaCopy, ",");
-
-    while (token != NULL) {
-        char colName[50], type[20];
-        sscanf(token, "%[^:]:%s", colName, type);
-
-        if (strcmp(colName, column) == 0) {
-            colIndex = index;
-            break;
-        }
-
-        index++;
-        token = strtok(NULL, ",");
-    }
-
-    if (colIndex == -1) {
-        printf(ERROR "\tColumn not found\n" RESET);
-        fclose(fp);
-        fclose(temp);
-        return;
-    }
-
-    int deleted = 0;
-
-    while (fgets(line, sizeof(line), fp)) {
-        char lineCopy[512];
-        strcpy(lineCopy, line);
-
-        char *fields[50];
-        int i = 0;
-
-        char *field = strtok(lineCopy, ",");
-
-        while (field != NULL) {
-            fields[i++] = field;
-            field = strtok(NULL, ",");
-        }
-
-        fields[i - 1][strcspn(fields[i - 1], "\n")] = 0;
-
-        if (strcmp(fields[colIndex], value) != 0) {
-            fprintf(temp, "%s", line);
-        } else {
-            deleted = 1;
-        }
-    }
-
-    fclose(fp);
-    fclose(temp);
-
-    remove(path);
-    rename("temp.dat", path);
-
-    if (deleted)
-        printf(PROMPT "\tRecord deleted successfully\n\n" RESET);
-    else
-        printf(ERROR "\tNo matching record found\n\n" RESET);
-}
-
-void viewTable() {
-    if (currentDB[0] == '\0') {
-        printf(ERROR "\tNo database selected!\n" RESET);
-        return;
-    }
-
-    char tbname[100];
-    printf("\tEnter table name: ");
-    fgets(tbname, sizeof(tbname), stdin);
-    tbname[strcspn(tbname, "\n")] = 0;
-
-    char path[256];
-    snprintf(path, sizeof(path), "%s/%s/%s", DB_PATH, currentDB, tbname);
-
-    FILE *fp = fopen(path, "r");
-    if (!fp) {
-        printf(ERROR "\tTable not found\n" RESET);
-        return;
-    }
-
-    char line[512];
-
-    fgets(line, sizeof(line), fp);
-
-    char schemaCopy[512];
-    strcpy(schemaCopy, line);
-
-    char colNames[50][50];
+    char headers[50][50];
     int colCount = 0;
 
-    char *token = strtok(schemaCopy, ",");
+    fgets(line, sizeof(line), fp);
 
-    while (token != NULL) {
-        char name[50], type[20];
-        sscanf(token, "%[^:]:%s", name, type);
+    char schemaCopy[512];
+    strcpy(schemaCopy, line);
 
-        strcpy(colNames[colCount++], name);
-        token = strtok(NULL, ",");
+    char *tok = strtok(schemaCopy, ",");
+    while (tok) {
+        sscanf(tok, "%[^|]", headers[colCount++]);
+        tok = strtok(NULL, ",");
     }
 
-    char choice[10];
-    int hasFilter = 0, filterIndex = -1;
+    int filterIndex = -1;
     char filterValue[50];
+    char choice[10];
 
-    printf("\tApply filter? (yes/no): ");
-    fgets(choice, sizeof(choice), stdin);
+    read_input("Apply filter? (yes/no): ", choice, sizeof(choice));
 
     if (strncmp(choice, "yes", 3) == 0) {
-        hasFilter = 1;
-
-        printf("\tAvailable columns:\n");
+        printf("Columns:\n");
         for (int i = 0; i < colCount; i++) {
-            printf("\t%d. %s\n", i + 1, colNames[i]);
+            printf("%d. %s\n", i + 1, headers[i]);
         }
 
         int colChoice;
-        printf("\tSelect column number: ");
+        printf("Select column number: ");
         scanf("%d", &colChoice);
         getchar();
 
         filterIndex = colChoice - 1;
 
-        printf("\tEnter value: ");
-        fgets(filterValue, sizeof(filterValue), stdin);
-        filterValue[strcspn(filterValue, "\n")] = 0;
+        read_input("Value: ", filterValue, sizeof(filterValue));
     }
 
-    int hasSort = 0, sortIndex = -1;
-    char order[10];
-
-    printf("\tApply sorting? (yes/no): ");
-    fgets(choice, sizeof(choice), stdin);
-
-    if (strncmp(choice, "yes", 3) == 0) {
-        hasSort = 1;
-
-        printf("\tAvailable columns:\n");
-        for (int i = 0; i < colCount; i++) {
-            printf("\t%d. %s\n", i + 1, colNames[i]);
-        }
-
-        int colChoice;
-        printf("\tSelect column number: ");
-        scanf("%d", &colChoice);
-        getchar();
-
-        sortIndex = colChoice - 1;
-
-        printf("\tOrder (asc/desc): ");
-        fgets(order, sizeof(order), stdin);
-        order[strcspn(order, "\n")] = 0;
-    }
-
-    char rows[100][50][50];
+    char rows[200][50][50];
     int rowCount = 0;
 
     while (fgets(line, sizeof(line), fp)) {
         char *f = strtok(line, ",");
         int i = 0;
 
-        while (f != NULL) {
+        while (f) {
             strcpy(rows[rowCount][i++], f);
             f = strtok(NULL, ",");
         }
@@ -806,7 +351,26 @@ void viewTable() {
 
     fclose(fp);
 
-    if (hasSort) {
+    int sortIndex = -1;
+    char order[10];
+
+    read_input("Apply sorting? (yes/no): ", choice, sizeof(choice));
+
+    if (strncmp(choice, "yes", 3) == 0) {
+        printf("Columns:\n");
+        for (int i = 0; i < colCount; i++) {
+            printf("%d. %s\n", i + 1, headers[i]);
+        }
+
+        int colChoice;
+        printf("Select column number: ");
+        scanf("%d", &colChoice);
+        getchar();
+
+        sortIndex = colChoice - 1;
+
+        read_input("Order (asc/desc): ", order, sizeof(order));
+
         for (int i = 0; i < rowCount - 1; i++) {
             for (int j = 0; j < rowCount - i - 1; j++) {
 
@@ -827,19 +391,20 @@ void viewTable() {
     }
 
     printf("\n");
+    print_separator(colCount);
 
-    printBorder(colCount);
-
+    printf("|");
     for (int i = 0; i < colCount; i++) {
-        printf("| %-15s", colNames[i]);
+        printf(" %-15s|", headers[i]);
     }
-    printf("|\n");
+    printf("\n");
 
-    printBorder(colCount);
+    print_separator(colCount);
 
     for (int i = 0; i < rowCount; i++) {
 
-        if (hasFilter && strcmp(rows[i][filterIndex], filterValue) != 0)
+        if (filterIndex != -1 &&
+            strcmp(rows[i][filterIndex], filterValue) != 0)
             continue;
 
         printf("|");
@@ -849,71 +414,352 @@ void viewTable() {
         printf("\n");
     }
 
-    printBorder(colCount);
+    print_separator(colCount);
+    printf("\n");
 }
 
-void mydb_ops(char input[MAX_CMD_LEN]) {
-    if (strcmp(input, "usedb\n") == 0) {
-        usedb();
-    }
-    else if (strcmp(input, "createdb\n") == 0) {
-        createdb();
-    }
-    else if (strcmp(input, "showdb\n") == 0) {
-        showdb();
-    }
-    else if (strcmp(input, "deletedb\n") == 0) {
-        deletedb();
-    }
-    else if (strcmp(input, "createtb\n") == 0) {
-        createtb();
-    }
-    else if (strcmp(input, "showtb\n") == 0) {
-        showtb();
-    }
-    else if (strcmp(input, "insert\n") == 0) {
-        insertRecord();
-    }
-    else if (strcmp(input, "updatetb\n") == 0) {
-        updateRecord();
-    }
-    else if (strcmp(input, "altertb\n") == 0) {
-        alterTable();
-    }
-    else if (strcmp(input, "delete\n") == 0) {
-        deleteRecord();
-    }
-    else if (strcmp(input, "view\n") == 0) {
-        viewTable();
-    }
-    else if (strcmp(input, "deletetb\n") == 0) {
-        deletetb();
-    }
+/* ================= DELETE TABLE ================= */
+void delete_table() {
+    if (!activeDB[0]) return;
+
+    char table[64], path[MAX_PATH];
+    read_input("Table to delete: ", table, sizeof(table));
+    build_path(path, DB_ROOT, activeDB, table);
+
+    if (remove(path) == 0)
+        printf(COLOR_OK "Table deleted\n" COLOR_RESET);
+    else
+        printf(COLOR_ERR "Failed to delete table\n" COLOR_RESET);
+    printf("\n");
 }
+
+/* ================= ALTER TABLE ================= */
+void alter_table() {
+    if (!activeDB[0]) return;
+
+    char table[64], action[16];
+    char path[MAX_PATH];
+
+    read_input("Table: ", table, sizeof(table));
+    read_input("Action (add/drop): ", action, sizeof(action));
+
+    build_path(path, DB_ROOT, activeDB, table);
+
+    FILE *fp = fopen(path, "r");
+    FILE *temp = fopen("temp.tbl", "w");
+
+    if (!fp || !temp) return;
+
+    char schema[512];
+    fgets(schema, sizeof(schema), fp);
+    trim_newline(schema);
+
+    if (strcmp(action, "add") == 0) {
+        char col[50], type[20];
+        read_input("New column: ", col, sizeof(col));
+        read_input("Type: ", type, sizeof(type));
+
+        fprintf(temp, "%s,%s|%s\n", schema, col, type);
+
+        char line[512];
+        while (fgets(line, sizeof(line), fp)) {
+            trim_newline(line);
+            fprintf(temp, "%s,NULL\n", line);
+        }
+    }
+
+    else if (strcmp(action, "drop") == 0) {
+        char col[50];
+        read_input("Column to drop: ", col, sizeof(col));
+
+        char *cols[50];
+        int count = 0, dropIndex = -1;
+
+        char schemaCopy[512];
+        strcpy(schemaCopy, schema);
+
+        char *tok = strtok(schemaCopy, ",");
+        while (tok) {
+            char name[50];
+            sscanf(tok, "%[^|]", name);
+
+            if (strcmp(name, col) == 0)
+                dropIndex = count;
+
+            cols[count++] = tok;
+            tok = strtok(NULL, ",");
+        }
+
+        if (dropIndex == -1) {
+            printf(COLOR_ERR "Column not found\n" COLOR_RESET);
+            fclose(fp); fclose(temp);
+            return;
+        }
+
+        int first = 1;
+        for (int i = 0; i < count; i++) {
+            if (i == dropIndex) continue;
+
+            if (!first) fprintf(temp, ",");
+            fprintf(temp, "%s", cols[i]);
+            first = 0;
+        }
+        fprintf(temp, "\n");
+
+        char line[512];
+
+        while (fgets(line, sizeof(line), fp)) {
+            char copy[512];
+            strcpy(copy, line);
+
+            char *fields[50];
+            int fieldCount = 0;
+
+            char *f = strtok(copy, ",");
+            while (f) {
+                fields[fieldCount++] = f;
+                f = strtok(NULL, ",");
+            }
+
+            fields[fieldCount - 1][strcspn(fields[fieldCount - 1], "\n")] = 0;
+
+            int firstField = 1;
+            for (int i = 0; i < fieldCount; i++) {
+                if (i == dropIndex) continue;
+
+                if (!firstField) fprintf(temp, ",");
+                fprintf(temp, "%s", fields[i]);
+                firstField = 0;
+            }
+            fprintf(temp, "\n");
+        }
+    }
+
+    fclose(fp);
+    fclose(temp);
+
+    remove(path);
+    rename("temp.tbl", path);
+
+    printf(COLOR_OK "Table altered\n" COLOR_RESET);
+    printf("\n");
+}
+
+/* ================= UPDATE RECORD ================= */
+void update_record() {
+    if (!activeDB[0]) return;
+
+    char table[64], path[MAX_PATH];
+    build_path(path, DB_ROOT, activeDB, table);
+
+    read_input("Table: ", table, sizeof(table));
+    build_path(path, DB_ROOT, activeDB, table);
+
+    FILE *fp = fopen(path, "r");
+    FILE *temp = fopen("temp.tbl", "w");
+
+    if (!fp || !temp) return;
+
+    char schema[512];
+    fgets(schema, sizeof(schema), fp);
+    fprintf(temp, "%s", schema);
+
+    char target[50], newVal[50], condCol[50], condVal[50];
+    read_input("SET column: ", target, sizeof(target));
+    read_input("New value: ", newVal, sizeof(newVal));
+    read_input("WHERE column: ", condCol, sizeof(condCol));
+    read_input("Condition value: ", condVal, sizeof(condVal));
+
+    char *cols[50];
+    int count = 0, tIndex = -1, cIndex = -1;
+
+    char schemaCopy[512];
+    strcpy(schemaCopy, schema);
+
+    char *tok = strtok(schemaCopy, ",");
+    while (tok) {
+        char name[50];
+        sscanf(tok, "%[^|]", name);
+
+        if (strcmp(name, target) == 0) tIndex = count;
+        if (strcmp(name, condCol) == 0) cIndex = count;
+
+        cols[count++] = tok;
+        tok = strtok(NULL, ",");
+    }
+
+    char line[512];
+
+    while (fgets(line, sizeof(line), fp)) {
+        char *fields[50];
+        int i = 0;
+
+        char *f = strtok(line, ",");
+        while (f) {
+            fields[i++] = f;
+            f = strtok(NULL, ",");
+        }
+
+        fields[i - 1][strcspn(fields[i - 1], "\n")] = 0;
+
+        if (strcmp(fields[cIndex], condVal) == 0) {
+            strcpy(fields[tIndex], newVal);
+        }
+
+        for (int j = 0; j < i; j++) {
+            fprintf(temp, "%s", fields[j]);
+            if (j != i - 1) fprintf(temp, ",");
+        }
+        fprintf(temp, "\n");
+    }
+
+    fclose(fp);
+    fclose(temp);
+
+    remove(path);
+    rename("temp.tbl", path);
+
+    printf(COLOR_OK "Record(s) updated\n" COLOR_RESET);
+    printf("\n");
+}
+
+/* ================= DELETE RECORD ================= */
+void delete_record() {
+    if (!activeDB[0]) return;
+
+    char table[64], path[MAX_PATH];
+    read_input("Table: ", table, sizeof(table));
+    build_path(path, DB_ROOT, activeDB, table);
+
+    FILE *fp = fopen(path, "r");
+    FILE *temp = fopen("temp.tbl", "w");
+
+    if (!fp || !temp) return;
+
+    char schema[512];
+    fgets(schema, sizeof(schema), fp);
+    fprintf(temp, "%s", schema);
+
+    char col[50], val[50];
+    read_input("Column: ", col, sizeof(col));
+    read_input("Value: ", val, sizeof(val));
+
+    int index = -1, i = 0;
+
+    char schemaCopy[512];
+    strcpy(schemaCopy, schema);
+
+    char *tok = strtok(schemaCopy, ",");
+    while (tok) {
+        char name[50];
+        sscanf(tok, "%[^|]", name);
+
+        if (strcmp(name, col) == 0) {
+            index = i;
+            break;
+        }
+        i++;
+        tok = strtok(NULL, ",");
+    }
+
+    char line[512];
+
+    while (fgets(line, sizeof(line), fp)) {
+        char copy[512];
+        strcpy(copy, line);
+
+        char *fields[50];
+        int j = 0;
+
+        char *f = strtok(copy, ",");
+        while (f) {
+            fields[j++] = f;
+            f = strtok(NULL, ",");
+        }
+
+        fields[j - 1][strcspn(fields[j - 1], "\n")] = 0;
+
+        if (strcmp(fields[index], val) != 0) {
+            fprintf(temp, "%s", line);
+        }
+    }
+
+    fclose(fp);
+    fclose(temp);
+
+    remove(path);
+    rename("temp.tbl", path);
+
+    printf(COLOR_OK "Delete operation complete\n" COLOR_RESET);
+    printf("\n");
+}
+
+/* ================= COMMAND SYSTEM ================= */
+
+typedef struct {
+    char command[20];
+    void (*func)();
+} Command;
+
+Command commands[] = {
+    {"createdb", create_database},
+    {"usedb", use_database},
+    {"showdb", list_databases},
+    {"deletedb", delete_database},
+    {"createtb", create_table},
+    {"showtb", list_tables},
+    {"insert", insert_record},
+    {"view", view_table},
+    {"deletetb", delete_table},
+    {"updatetb", update_record},
+    {"altertb", alter_table},
+    {"delete", delete_record},
+    {"help", show_help},
+    {"clear", clear_screen},
+};
+
+int command_count = sizeof(commands) / sizeof(Command);
+
+void execute_command(char *input) {
+    if (strlen(input) == 0) return;
+
+    if (requires_database(input) && !activeDB[0]) {
+        printf(COLOR_ERR "Select a database first using 'usedb'\n" COLOR_RESET);
+        return;
+    }
+
+    for (int i = 0; i < command_count; i++) {
+        if (strcmp(input, commands[i].command) == 0) {
+            commands[i].func();
+            return;
+        }
+    }
+
+    printf(COLOR_ERR "Unknown command: '%s'\n" COLOR_RESET, input);
+    printf("Type 'help' to see available commands.\n");
+}
+
+/* ================= MAIN ================= */
 
 int main() {
-    mkdir(DB_PATH, 0777);
-    char input[MAX_CMD_LEN];
+    mkdir(DB_ROOT, 0777);
 
     login();
-    printf("WELCOME TO NextDB CLI.\n");
-    printf("NextDB CLI %s\n", VERSION);
-    printf("Type 'help' for help.\n\n");
+
+    printf("NextDB CLI %s\n\n", VERSION);
+
+    char input[MAX_INPUT];
 
     while (1) {
-        printf(PROMPT "NextDB> " RESET);
-        fgets(input, MAX_CMD_LEN, stdin);
-        if (strcmp(input, "help\n") == 0) {
-            nextdb_commands();
-        }
-        else if (strcmp(input, "clear\n") == 0) {
-            system("clear");
-        }
-        else if (strcmp(input, "exit\n") == 0) {
-            exit(0);
-        }
-        else {
-            mydb_ops(input);
-        }
+        printf(COLOR_OK "NextDB> " COLOR_RESET);
+        fgets(input, sizeof(input), stdin);
+        trim_newline(input);
+
+        if (strcmp(input, "exit") == 0)
+            break;
+
+        execute_command(input);
     }
+
+    return 0;
 }
